@@ -757,6 +757,13 @@ void bl_init(void)
   uint32_t init_time = micros();
 #endif
   startup_time = init_time/1000L; // convert to milliseconds
+  // Read the wake cause before any subsystem runs. esp_sleep_get_wakeup_cause()
+  // reports the *last* sleep, and anything that light-sleeps during init (the
+  // SCD41 sampling wait in EnvironmentSensor::init, for one) turns a button
+  // wake into "timer" by the time the button code asks. On the Sticky that is
+  // exactly what happened: the wake was EXT0 at boot and 4 (timer) a few lines
+  // later, so the button was never read. Take the answer once, here.
+  wakeup_reason = esp_sleep_get_wakeup_cause();
 #ifdef DEV_FIRMWARE
   Serial.begin(115200);
   wait_for_serial();
@@ -806,7 +813,7 @@ void bl_init(void)
   }
 #endif
 
-  wakeup_reason = esp_sleep_get_wakeup_cause();
+  // wakeup_reason was read at the top of bl_init, before anything could sleep.
   bool gpio_wakeup = (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO ||
                       wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 ||
                       wakeup_reason == ESP_SLEEP_WAKEUP_EXT1);

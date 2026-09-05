@@ -61,7 +61,15 @@ static ButtonPressResult classify_button_presses() {
   Log_info("Button time=%lu: start", time_start);
   pinMode(pDevice->interrupt_pin, INPUT);
   if (digitalRead(pDevice->interrupt_pin) == HIGH) {
-    if (time_start < 2000) {
+#ifdef BOARD_SEEED_STICKY
+    // This is only ever reached on a GPIO wake, so a released button is the
+    // press that woke us, however long boot took. The 2 s guard below would
+    // otherwise park the Sticky waiting for a press that already happened.
+    const bool wokeByButton = true;
+#else
+    const bool wokeByButton = time_start < 2000;
+#endif
+    if (wokeByButton) {
       Log_info("Button: already released at start (GPIO wakeup), waiting for second press");
       return wait_for_second_press(time_start);
     } else {
