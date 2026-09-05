@@ -59,6 +59,10 @@ const char *const kLutLenNames[] = {"90", "105"};
 const char *const kVsNames[] = {"VSS", "VSH1", "VSL", "VSH2"};
 const char *const kYdirNames[] = {"dec", "inc"};
 const char *const kOnOff[] = {"0", "1"};
+// Which RAM code is black. The panel's OTP 4-gray waveforms (and upstream's
+// custom LUT, written for bb_epaper's inverted palette) drive 11 = black,
+// 01 = dark, 10 = light, 00 = white; Waveshare's LUT is the other way round.
+const char *const kPolNames[] = {"norm", "inv"};
 
 // Upstream bb_epaper a4bbf189 EP397 4-gray LUT ("custom LUT to get better
 // grays than the built-in LUT"). It writes only 90 bytes; bytes 90..104 are
@@ -107,7 +111,7 @@ const uint8_t kBayer4[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15
 
 struct Tune {
   // common
-  int preset, engine, swap, border, U, dbl, ydir;
+  int preset, engine, pol, swap, border, U, dbl, ydir;
   // OTP engine
   int T, split, ovVGH, ovVSH1, ovVSH2, ovVSL, ovVCOM;
   // LUT engine
@@ -140,6 +144,7 @@ struct Param {
 const Param kParams[] = {
     P_ENUM("preset", t.preset, 4, kPresetNames, GRP_COMMON),
     P_ENUM("engine", t.engine, 2, kEngineNames, GRP_COMMON),
+    P_ENUM("pol", t.pol, 2, kPolNames, GRP_COMMON),
     P_ENUM("swap", t.swap, 2, kOnOff, GRP_COMMON),
     P_ENUM("border", t.border, 4, kBorderNames, GRP_COMMON),
     P_ENUM("U", t.U, 5, kUNames, GRP_COMMON),
@@ -287,19 +292,19 @@ void applyPreset(int n)
   t.ovVGH = t.ovVSH1 = t.ovVSH2 = t.ovVSL = t.ovVCOM = -1;
   switch (n) {
     case 0: // bb_epaper 7df2bd1 as shipped: OTP slot 0x5A, 0x22 = D7, mid-levels swapped in png_draw
-      t.engine = 0; t.swap = 1; t.border = 1; t.U = 0; t.T = 0x5A;
+      t.engine = 0; t.pol = 1; t.swap = 0; t.border = 1; t.U = 0; t.T = 0x5A;
       t.base = 0; t.len = 0; t.lutEnd = 1; t.volt = 0; loadLutBase();
       break;
     case 1: // Seeed vendor driver: OTP slot 0x67 (103 C), 0x22 = D7, border 00
-      t.engine = 0; t.swap = 1; t.border = 0; t.U = 0; t.T = 0x67;
+      t.engine = 0; t.pol = 1; t.swap = 0; t.border = 0; t.U = 0; t.T = 0x67;
       t.base = 0; t.len = 0; t.lutEnd = 1; t.volt = 0; loadLutBase();
       break;
     case 2: // upstream bb_epaper a4bbf189 custom LUT, 90 bytes, LUT END 07, still D7
-      t.engine = 1; t.swap = 0; t.border = 1; t.U = 0; t.T = 0x67;
+      t.engine = 1; t.pol = 1; t.swap = 0; t.border = 1; t.U = 0; t.T = 0x67;
       t.base = 0; t.len = 0; t.lutEnd = 1; t.volt = 0; loadLutBase();
       break;
     default: // Waveshare 4.26" 4-gray: 105-byte LUT + voltages, 0x22 = C7
-      t.engine = 1; t.swap = 0; t.border = 1; t.U = 2; t.T = 0x67;
+      t.engine = 1; t.pol = 0; t.swap = 0; t.border = 1; t.U = 2; t.T = 0x67;
       t.base = 1; t.len = 1; t.lutEnd = 0; t.volt = 1; loadLutBase();
       break;
   }
@@ -395,16 +400,26 @@ void writePlanes(void)
 {
   uint8_t *p0 = (uint8_t *)bbep.getBuffer();
   uint8_t *p1 = p0 + kPlaneBytes;
-  // Exchanging the two planes exchanges codes 01 and 10, i.e. the two
-  // middle gray levels; black (00) and white (11) are unaffected.
-  uint8_t *toRam = t.swap ? p1 : p0;
-  uint8_t *toAlt = t.swap ? p0 : p1;
+  // The buffer holds level = code (00 black .. 11 white, bit0 in plane 0).
+  // pol=inv wants 11 = black / 01 = dark / 10 = light / 00 = white, which is
+  // "invert every bit, then exchange the planes"; swap exchanges the planes
+  // once more so the two middle levels trade places.
+  bool invert = t.pol == 1;
+  bool exchange = (t.pol == 1) != (t.swap == 1);
+  if (invert) {
+    for (int i = 0; i < 2 * kPlaneBytes; i++) p0[i] ^= 0xFF;
+  }
+  uint8_t *toRam = exchange ? p1 : p0;
+  uint8_t *toAlt = exchange ? p0 : p1;
   setRamCounters();
   bbep.startWrite(PLANE_0); // 0x24
   bbep.writeData(toRam, kPlaneBytes);
   setRamCounters();
   bbep.startWrite(PLANE_1); // 0x26
   bbep.writeData(toAlt, kPlaneBytes);
+  if (invert) {
+    for (int i = 0; i < 2 * kPlaneBytes; i++) p0[i] ^= 0xFF; // restore the buffer
+  }
 }
 
 void refreshPanel(void)
@@ -495,9 +510,9 @@ void drawParams(int yTop)
   bbep.setTextColor(0, 3);
   bbep.drawString(line, 4, yTop);
 
-  // the visible parameters, 4 columns x 10 rows in the small font
+  // the visible parameters, 5 columns x 10 rows in the small font
   bbep.setFont(FONT_8x8);
-  const int cols = 4, rows = 10, colW = kW / cols;
+  const int cols = 5, rows = 10, colW = kW / cols;
   int n = 0;
   for (int i = 0; i < kParamCount; i++) {
     if (!visible(i)) continue;
