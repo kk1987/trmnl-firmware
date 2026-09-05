@@ -41,6 +41,9 @@
 #include <api-client/request_headers.h>
 #include "driver/gpio.h"
 #include "soc/rtc_cntl_reg.h"
+#ifdef GRAY_TUNE_MODE
+#include <gray_tune.h>
+#endif
 #include "esp_flash.h"
 #include <nvs.h>
 #include <serialize_log.h>
@@ -965,6 +968,9 @@ void bl_init(void)
   // Mount SPIFFS
   filesystem_init();
 #endif // !BOARD_TRMNL_X
+#ifdef GRAY_TUNE_MODE
+  gray_tune_main(); // never returns
+#endif
 
 // #ifdef BOARD_TRMNL_X
 

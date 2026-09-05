@@ -68,10 +68,12 @@ void setup() {
 #else // TRMNL OG setup()
 void setup() {
 
+#ifndef GRAY_TUNE_MODE // the tuner build never touches WiFi; startQA() scans for TRMNL_QA
   bool testPassed = checkIfAlreadyPassed();
   if (!testPassed) {
     startQA();
   }
+#endif // !GRAY_TUNE_MODE
   esp_ota_mark_app_valid_cancel_rollback();
   bl_init();
 }
