@@ -32,6 +32,36 @@ BBEPAPER bbep;
 #endif // BOARD_SEEED_STICKY
 #endif // !PARALLEL_EPD
 
+#ifdef BOARD_SEEED_STICKY
+// EP397 (SSD1677) 4-gray init for the Sticky. bb_epaper's own sequence selects
+// the panel's OTP waveform with temperature register 0x1A = 0x5A, the 90 C
+// slot that the same controller's Waveshare 4.26" code uses for its fast B/W
+// mode; the two middle grays it yields are a side effect and read far too
+// light (native L85 at roughly 170/255). Seeed's vendor driver forces 0x67
+// (103 C) before a gray4 refresh, and on the panel that slot gives four evenly
+// spaced levels (measured with the seeed_sticky_graytune build). Same base
+// init as the library's (soft reset, internal temp sensor, soft start, gate
+// count, data entry / RAM window / counters), border waveform 00 as the vendor
+// driver sets it, then the two-byte temperature write. The refresh byte stays
+// the library's 0xD7 (load the LUT for the register temperature, mode 1).
+static const uint8_t epd397_vendor_gray_init[] = {
+    1, 0x12, // soft reset
+    BUSY_WAIT,
+    2, 0x18, 0x80, // internal temperature sensor
+    6, 0x0c, 0xae, 0xc7, 0xc3, 0xc0, 0x80, // booster soft start
+    4, 0x01, 0xdf, 0x01, 0x02, // driver output control (height-1)
+    2, 0x3c, 0x00, // border waveform: follow LUT0, as the vendor gray4 driver does
+    2, 0x11, 0x01, // data entry mode
+    5, 0x44, 0x00, 0x00, 0x1f, 0x03, // RAM x start/end
+    5, 0x45, 0xdf, 0x01, 0x00, 0x00, // RAM y start/end
+    3, 0x4e, 0x00, 0x00, // RAM x counter
+    3, 0x4f, 0x00, 0x00, // RAM y counter
+    BUSY_WAIT,
+    3, 0x1a, 0x67, 0x00, // temperature register: the vendor's 4-gray OTP slot (103 C)
+    0 // end
+};
+#endif // BOARD_SEEED_STICKY
+
 // List of supported TRMNL devices with SPI ePaper displays. The list can be in any order since the name is matched
 // The final parameter is the panel type which is from an enumerated list
 #ifdef PARALLEL_EPD
@@ -1311,6 +1341,14 @@ int png_draw(PNGDRAW *pDraw)
             } // for x
         } else { // normal 0/1 split plane
             ucMask = (iPlane == PNG_2_BIT_0) ? 0x40 : 0x80; // lower or upper source bit
+            if (bbep.getPanelType() == EP397_800x480_4GRAY) {
+                // On the EP397 RAM code 01 (0x24 set) is the dark gray and 10 the
+                // light one (measured with the tuner build), the opposite of what
+                // the lower/upper split above produces after inversion, so feed
+                // each plane the other source bit. Black and white, whose two
+                // bits are equal, are unaffected.
+                ucMask = (iPlane == PNG_2_BIT_0) ? 0x80 : 0x40;
+            }
             for (x=0; x<iWidth; x++) {
                 uc <<= 1;
                 if (src & ucMask) {
@@ -1704,6 +1742,13 @@ PNG *png = new PNG();
             } else { // 2-bpp (or greater, but reduced to 2-bpp)
                 if (pDevice->epd_mosi_pin != 0 || pDevice->epd_sck_pin != 0) {
                     bbep.setPanelType(dpList[pDevice->panel_set][iTempProfile].TwoBit);
+#ifdef BOARD_SEEED_STICKY
+                    if (bbep.getPanelType() == EP397_800x480_4GRAY) {
+                        // setPanelType() reloads the library defaults, so re-point the
+                        // init at the vendor slot every time, before initIO() sends it
+                        bbep._bbep.pInitFull = epd397_vendor_gray_init;
+                    }
+#endif // BOARD_SEEED_STICKY
                     bbep.initIO(pDevice->epd_dc_pin, pDevice->epd_rst_pin, pDevice->epd_busy_pin, pDevice->epd_cs_pin,
                     pDevice->epd_mosi_pin, pDevice->epd_sck_pin, 8000000);
                 } else {
