@@ -3,7 +3,10 @@
 #include <inttypes.h>
 #include <trmnl_log.h>
 
-#if defined(PARALLEL_EPD)
+// The Seeed Sticky uses the X-class partition table, whose data partition
+// is sized for LittleFS and is not SPIFFS-block aligned: SPIFFS neither
+// mounts nor formats it, and filesystem_init() then restarts in a loop.
+#if defined(PARALLEL_EPD) || defined(BOARD_SEEED_STICKY)
 #include <LittleFS.h>
 #define FS LittleFS
 #else

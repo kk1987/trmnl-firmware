@@ -23,8 +23,13 @@ BBEPAPER bbep;
 #ifndef DEVICE_MODEL
 #error "Must have a device model name defined in platformio.ini!"
 #endif // DEVICE_MODEL
+#ifdef BOARD_SEEED_STICKY
+#include <LittleFS.h>
+#define FS LittleFS // X-class data partition, see filesystem.cpp
+#else
 #include <SPIFFS.h>
 #define FS SPIFFS
+#endif // BOARD_SEEED_STICKY
 #endif // !PARALLEL_EPD
 
 // List of supported TRMNL devices with SPI ePaper displays. The list can be in any order since the name is matched
