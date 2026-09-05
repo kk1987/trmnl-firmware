@@ -1887,12 +1887,19 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait, bool b
         iRefreshMode = REFRESH_FAST; // fast update when showing loading screen
     }
     Log_info("%s [%d]: EPD refresh mode: %d\r\n", __FILE__, __LINE__, iRefreshMode);
-#ifndef BOARD_SEEED_RETERMINAL_E1002
+#if defined(BOARD_SEEED_STICKY)
+    // The EP397's 4-gray refresh does not survive light sleep during its
+    // busy-wait: with it on, the panel downloads a new frame but never updates.
+    // The E1002 is already excluded below for the same class of reason; the
+    // Sticky was missed. Light sleep during the ~10s awake window saves
+    // negligible battery next to the unconditional deep sleep between polls, so
+    // force it off here regardless of DO_NOT_LIGHT_SLEEP.
+    bbep.setLightSleep(false);
+#elif !defined(BOARD_SEEED_RETERMINAL_E1002)
 #ifdef DO_NOT_LIGHT_SLEEP
     bbep.setLightSleep(false);
 #else
     bbep.setLightSleep(true);
-
 #endif // DO_NOT_LIGHT_SLEEP
 #endif // !BOARD_SEEED_RETERMINAL_E1002
     if (bbep.getPanelType() == EP397_800x480 && iRefreshMode == REFRESH_FAST) {
