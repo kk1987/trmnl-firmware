@@ -40,6 +40,7 @@
 #include <api-client/display.h>
 #include <api-client/request_headers.h>
 #include "driver/gpio.h"
+#include "soc/rtc_cntl_reg.h"
 #include "esp_flash.h"
 #include <nvs.h>
 #include <serialize_log.h>
@@ -720,12 +721,32 @@ void process_iqs323_data(void)
  */
 void bl_init(void)
 {
+#if defined(BOARD_SEEED_STICKY) && defined(DEV_FIRMWARE)
+  // Diagnostic: did the deep-sleep pad hold on GPIO45/46 survive the wake reset?
+  const uint32_t stickyHoldRegAtBoot = REG_READ(RTC_CNTL_DIG_PAD_HOLD_REG);
+  const int stickyResetReason = (int)esp_reset_reason();
+#endif
 #ifdef BOARD_SEEED_STICKY
+  // Latch the battery power on so the device stays up after the user releases
+  // the power button. The latch is a D flip-flop: GPIO45 = data (power hold),
+  // GPIO46 = clock (power lock). Same sequence as Seeed's vendor demo
+  // (power_on_hold): data high, clock pulsed low-high-low, clock left LOW.
+  // The previous 0->1 clock with no falling edge never latched the battery
+  // rail at all: the device only ever ran off VBUS, and off USB it powered
+  // off at the first deep sleep.
   pinMode(45, OUTPUT); // power hold (DATA)
   pinMode(46, OUTPUT); // power lock (CLK)
   digitalWrite(45, 1);
   digitalWrite(46, 0);
-  digitalWrite(46, 1); // Hold the battery power enabled for after the user releases the power button
+  // Release the deep-sleep pad hold armed by stickyHoldPowerLatch() (data held
+  // high, clock held low across the wake reset); the pads now follow the
+  // levels just written, so nothing glitches.
+  gpio_hold_dis(GPIO_NUM_45);
+  gpio_hold_dis(GPIO_NUM_46);
+  delayMicroseconds(10);
+  digitalWrite(46, 1);
+  delayMicroseconds(10);
+  digitalWrite(46, 0);
 #endif
 #ifdef BOARD_TRMNL_X
   uint32_t init_time = esp_cpu_get_cycle_count() / esp_rom_get_cpu_ticks_per_us();
@@ -739,6 +760,10 @@ void bl_init(void)
   Log.begin(LOG_LEVEL_VERBOSE, &Serial);
 #endif
   Log_info("BL init success");
+#if defined(BOARD_SEEED_STICKY) && defined(DEV_FIRMWARE)
+  Log_info("Sticky diag: reset reason %d, wake cause %d, DIG_PAD_HOLD at boot 0x%08" PRIx32 " (now 0x%08" PRIx32 ")",
+           stickyResetReason, (int)esp_sleep_get_wakeup_cause(), stickyHoldRegAtBoot, REG_READ(RTC_CNTL_DIG_PAD_HOLD_REG));
+#endif
 
   WifiCaptivePortal.setHostname(getWifiClientHostname());
 
@@ -2597,6 +2622,42 @@ static void resetDeviceCredentials(void)
   ESP.restart();
 }
 
+#ifdef BOARD_SEEED_STICKY
+/**
+ * @brief Keep the Sticky's battery rail latched through deep sleep.
+ *
+ * The rail is enabled by a D flip-flop driven from GPIO45 (power hold, data)
+ * and GPIO46 (power lock, clock), clocked once in bl_init() after the
+ * power-button boot. ESP32-S3 deep sleep powers down the digital pads, so
+ * without a pad hold both outputs float; with a floating clock and a floating
+ * (pulled-down) data line the flip-flop can catch a spurious edge, the rail
+ * drops, and on battery the device switches off instead of sleeping: no timer
+ * wake, no button wake, only a 3 s power-button cold boot. On USB the rail is
+ * fed regardless, which is why the failure only shows once the charger is
+ * unplugged. Hold data high and the clock low through the sleep; bl_init()
+ * releases the holds and re-clocks the latch.
+ */
+static void stickyHoldPowerLatch(void)
+{
+  // Data high, clock LOW (idle): the flip-flop keeps its latched state as long
+  // as no rising clock edge arrives, and a held-low clock cannot pick one up
+  // from a floating pad. Same idle level as Seeed's vendor demo leaves it at.
+  pinMode(45, OUTPUT);
+  pinMode(46, OUTPUT);
+  digitalWrite(45, 1);
+  digitalWrite(46, 0);
+  gpio_hold_dis(GPIO_NUM_45); // a held pad ignores the drive above; re-arm from the set levels
+  gpio_hold_dis(GPIO_NUM_46);
+  gpio_hold_en(GPIO_NUM_45);
+  gpio_hold_en(GPIO_NUM_46);
+  gpio_deep_sleep_hold_en();
+#ifdef DEV_FIRMWARE
+  Log_info("Sticky diag: latch held, DIG_PAD_HOLD 0x%08" PRIx32 ", DIG_ISO 0x%08" PRIx32,
+           REG_READ(RTC_CNTL_DIG_PAD_HOLD_REG), REG_READ(RTC_CNTL_DIG_ISO_REG));
+#endif
+}
+#endif // BOARD_SEEED_STICKY
+
 /**
  * @brief Function to sleep preparing and go to sleep
  * @param none
@@ -2675,6 +2736,9 @@ void goToSleep(void)
   gpio_deep_sleep_hold_en(); // Needed to keep the battery power enabled during RTC sleep
 #endif
 #endif
+#ifdef BOARD_SEEED_STICKY
+  stickyHoldPowerLatch();
+#endif
   esp_deep_sleep_start();
 }
 
@@ -2704,6 +2768,9 @@ static void goToSleepButtonOnly(void)
 #ifdef BOARD_XTEINK_X4
   gpio_hold_en(GPIO_NUM_13);
   gpio_deep_sleep_hold_en();
+#endif
+#ifdef BOARD_SEEED_STICKY
+  stickyHoldPowerLatch();
 #endif
   esp_deep_sleep_start();
 }
